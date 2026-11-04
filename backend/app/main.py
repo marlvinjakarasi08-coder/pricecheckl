@@ -81,13 +81,46 @@ app.add_middleware(
 )
 
 
+def _sample_commodities(q: Optional[str] = None) -> list[dict[str, str]]:
+    seen: dict[str, str] = {}
+    for row in SAMPLE_PRICES:
+        seen[row["commodity"]] = row.get("display_name") or row["commodity"]
+    items = [{"id": cid, "name": name} for cid, name in seen.items()]
+    items.sort(key=lambda item: item["name"].lower())
+    if not q or not q.strip():
+        return items
+    needle = q.strip().lower()
+    return [
+        item
+        for item in items
+        if needle in item["id"].lower() or needle in item["name"].lower()
+    ]
+
+
+def _sample_price_rows(commodity: Optional[str], q: Optional[str]) -> list[dict]:
+    key = (commodity or q or "").strip().lower()
+    if not key:
+        return list(SAMPLE_PRICES)
+    return [
+        row
+        for row in SAMPLE_PRICES
+        if key in row["commodity"].lower()
+        or key in str(row.get("display_name") or "").lower()
+    ]
+
+
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
-        "rows": db.count_prices(),
-        "products": len(db.list_commodities()),
-    }
+    try:
+        return {
+            "status": "ok",
+            "rows": db.count_prices(),
+            "products": len(db.list_commodities()),
+        }
+    except Exception:
+        logger.exception("Health check used sample data")
+        items = _sample_commodities()
+        return {"status": "ok", "rows": len(SAMPLE_PRICES), "products": len(items)}
 
 
 @app.get("/commodities")
@@ -95,7 +128,14 @@ def list_commodities(
     q: Optional[str] = Query(None, description="Type-ahead search text"),
 ):
     """Return products available in the latest scrape (filterable by search)."""
-    items = db.list_commodities(q)
+    try:
+        _ensure_seed_data()
+        items = db.list_commodities(q)
+        if items:
+            return {"commodities": items, "count": len(items)}
+    except Exception:
+        logger.exception("Commodity list failed; using sample products")
+    items = _sample_commodities(q)
     return {"commodities": items, "count": len(items)}
 
 
@@ -115,8 +155,14 @@ def list_prices(
     found; GMB producer references are attached only for maize / soya as extras.
     """
     query = commodity or q
-    prices = db.get_prices(commodity=commodity, q=q)
-    resolved = db.resolve_commodity(query) if query else None
+    try:
+        _ensure_seed_data()
+        prices = db.get_prices(commodity=commodity, q=q)
+        resolved = db.resolve_commodity(query) if query else None
+    except Exception:
+        logger.exception("Price list failed; using sample prices")
+        prices = _sample_price_rows(commodity, q)
+        resolved = prices[0]["commodity"] if prices else None
 
     gmb = []
     if resolved in {"maize", "soya"}:
@@ -129,6 +175,14 @@ def list_prices(
     if prices:
         display = prices[0].get("display_name") or resolved
 
+    suggestions: list[dict[str, str]] = []
+    if query and not prices:
+        try:
+            suggestions = db.list_commodities(query)[:8]
+        except Exception:
+            logger.exception("Suggestions failed; using sample products")
+            suggestions = _sample_commodities(query)[:8]
+
     return {
         "commodity": resolved,
         "display_name": display,
@@ -136,7 +190,7 @@ def list_prices(
         "count": len(prices),
         "prices": prices,
         "gmb_reference": gmb,
-        "suggestions": db.list_commodities(query)[:8] if query and not prices else [],
+        "suggestions": suggestions,
     }
 
 

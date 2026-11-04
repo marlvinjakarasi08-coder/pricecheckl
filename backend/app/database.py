@@ -10,26 +10,30 @@ import logging
 import os
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
+_active_db: Optional[Path] = None
 
-def _db_path() -> Path:
+
+def _db_candidates() -> list[Path]:
     """
-    Keep SQLite off OneDrive. Synced Desktop folders often make
-    every API call return 500 (database locked / disk I/O error).
+    Never put SQLite in the project folder. That folder lives on OneDrive
+    on the other computer, and SQLite there makes every API call return 500.
     """
+    paths: list[Path] = []
     if sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        folder = base / "PriceCheck"
-    else:
-        folder = Path(__file__).resolve().parent.parent
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder / "pricecheck.db"
-
-DB_PATH = _db_path()
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            paths.append(Path(local) / "PriceCheck" / "pricecheck.db")
+        temp = os.environ.get("TEMP") or os.environ.get("TMP")
+        if temp:
+            paths.append(Path(temp) / "PriceCheck" / "pricecheck.db")
+    paths.append(Path(tempfile.gettempdir()) / "PriceCheck" / "pricecheck.db")
+    return paths
 
 # Built-in aliases so typed search finds the right product.
 ALIASES: dict[str, list[str]] = {
@@ -46,11 +50,41 @@ ALIASES: dict[str, list[str]] = {
 }
 
 
-def get_connection() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), timeout=30)
+def _connect(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=DELETE")
+    return conn
+
+
+def get_connection() -> sqlite3.Connection:
+    """Open the first database path that actually works."""
+    global _active_db
+    ordered: list[Path] = []
+    if _active_db is not None:
+        ordered.append(_active_db)
+    for path in _db_candidates():
+        if path not in ordered:
+            ordered.append(path)
+
+    errors: list[str] = []
+    for path in ordered:
+        try:
+            conn = _connect(path)
+            _active_db = path
+            return conn
+        except Exception as exc:
+            errors.append(f"{path}: {exc}")
+            logger.warning("Database path failed: %s (%s)", path, exc)
+
+    fd, name = tempfile.mkstemp(prefix="pricecheck-", suffix=".db")
+    os.close(fd)
+    path = Path(name)
+    logger.error("Using a temporary database. Earlier paths failed: %s", "; ".join(errors))
+    conn = _connect(path)
+    _active_db = path
     return conn
 
 
