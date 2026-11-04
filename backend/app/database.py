@@ -6,16 +6,24 @@ One table (`prices`) stores market rows from scrapes or sample fallbacks.
 
 from __future__ import annotations
 
+import logging
+import os
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-import os
-import sys
+logger = logging.getLogger(__name__)
 
-def _db_path():
+
+def _db_path() -> Path:
+    """
+    Keep SQLite off OneDrive. Synced Desktop folders often make
+    every API call return 500 (database locked / disk I/O error).
+    """
     if sys.platform == "win32":
-        folder = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "PriceCheck"
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        folder = base / "PriceCheck"
     else:
         folder = Path(__file__).resolve().parent.parent
     folder.mkdir(parents=True, exist_ok=True)
@@ -39,8 +47,10 @@ ALIASES: dict[str, list[str]] = {
 
 
 def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
