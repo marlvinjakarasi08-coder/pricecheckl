@@ -11,6 +11,20 @@ export default defineConfig({
         target: "http://127.0.0.1:8000",
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ""),
+        configure: (proxy) => {
+          proxy.on("error", (err, _req, res) => {
+            console.error("API proxy error:", err.message);
+            if (res && !res.headersSent) {
+              res.writeHead(503, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  detail:
+                    "Backend is not running on port 8000. Start it from the backend folder, then refresh.",
+                })
+              );
+            }
+          });
+        },
       },
     },
   },
