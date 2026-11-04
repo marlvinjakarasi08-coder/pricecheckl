@@ -103,9 +103,17 @@ def _extract_as_of(text_blocks: list[str]) -> Optional[str]:
     return None
 
 
+def _parse_html(html: str) -> BeautifulSoup:
+    """Prefer lxml when installed; otherwise use Python's built-in parser."""
+    try:
+        return BeautifulSoup(html, "lxml")
+    except Exception:
+        return BeautifulSoup(html, "html.parser")
+
+
 def parse_ama_html(html: str) -> list[dict[str, Any]]:
     """Parse AMA flash-price HTML into price rows for EVERY listed product."""
-    soup = BeautifulSoup(html, "lxml")
+    soup = _parse_html(html)
     content = soup.select_one(".entry-content") or soup.select_one("article") or soup
     texts = [
         p.get_text(" ", strip=True).replace("\xa0", " ")

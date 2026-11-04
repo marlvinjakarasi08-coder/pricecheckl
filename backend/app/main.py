@@ -15,11 +15,13 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from . import database as db
 from .gmb_prices import get_gmb_prices
+from .sample_data import SAMPLE_PRICES
 from .scraper import scrape_prices
 
 logging.basicConfig(level=logging.INFO)
@@ -27,17 +29,27 @@ logger = logging.getLogger("pricecheck")
 
 
 def _ensure_seed_data() -> None:
-    if db.count_prices() == 0:
-        logger.info("Empty DB — seeding via scrape/fallback")
+    """Always seed demo rows first so the UI works even if AMA/SQLite scrape fails."""
+    if db.count_prices() > 0:
+        return
+    logger.info("Empty DB — loading demo prices, then trying AMA")
+    db.clear_and_insert_prices(SAMPLE_PRICES)
+    try:
         result = scrape_prices()
-        n = db.clear_and_insert_prices(result["rows"])
-        logger.info("Seeded %s rows (%s)", n, result["source"])
+        if result.get("rows"):
+            n = db.clear_and_insert_prices(result["rows"])
+            logger.info("Seeded %s rows (%s)", n, result["source"])
+    except Exception:
+        logger.exception("AMA scrape skipped; demo prices remain")
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    db.init_db()
-    _ensure_seed_data()
+    try:
+        db.init_db()
+        _ensure_seed_data()
+    except Exception:
+        logger.exception("Startup init failed; API will still start")
     yield
 
 
@@ -47,6 +59,12 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+
+@app.exception_handler(Exception)
+async def unhandled_error(_request: Request, exc: Exception):
+    logger.exception("Unhandled error")
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
+
 
 app.add_middleware(
     CORSMiddleware,
